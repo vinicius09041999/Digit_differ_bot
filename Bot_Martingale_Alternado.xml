@@ -1,0 +1,111 @@
+<xml xmlns="https://developers.google.com/blockly/xml" is_dbot="true" collection="false">
+  <block type="trade_definition" id="jP$g{!Mr}.i=NDcvc[.D" deletable="false" x="0" y="110">
+    <statement name="TRADE_OPTIONS">
+      <block type="trade_definition_market" id="Ke?={^7#b{x%U+r)Tj-E" deletable="false" movable="false">
+        <field name="MARKET_LIST">synthetic_index</field>
+        <field name="SUBMARKET_LIST">random_index</field>
+        <field name="SYMBOL_LIST">1HZ10V</field>
+        <next>
+          <block type="trade_definition_tradetype" id="aHS6b]#+YE)wIU^+9=]H" deletable="false" movable="false">
+            <field name="TRADETYPECAT_LIST">callput</field>
+            <field name="TRADETYPE_LIST">callput</field>
+            <next>
+              <block type="trade_definition_contracttype" id="n`jG}5[xN-rBoNZpfv@u" deletable="false" movable="false">
+                <field name="TYPE_LIST">both</field>
+                <next>
+                  <block type="trade_definition_candleinterval" id=".lFB9J]pRhPhcMk)x3=4" deletable="false" movable="false">
+                    <field name="CANDLEINTERVAL_LIST">60</field>
+                    <next>
+                      <block type="trade_definition_restartbuysell" id="M{S/t**H+5V0y6+N2-IM" deletable="false" movable="false">
+                        <field name="TIME_MACHINE_ENABLED">FALSE</field>
+                        <next>
+                          <block type="trade_definition_restartonerror" id="TI.=iAJvb8z!j!uAVq/3" deletable="false" movable="false">
+                            <field name="RESTARTONERROR">TRUE</field>
+                          </block>
+                        </next>
+                      </block>
+                    </next>
+                  </block>
+                </next>
+              </block>
+            </next>
+          </block>
+        </next>
+      </block>
+    </statement>
+    <statement name="SUBMARKET">
+      <block type="trade_definition_tradeoptions" id="x-9CYi|0Wg=WQLPNT_(M">
+        <mutation has_first_barrier="false" has_second_barrier="false" has_prediction="false"></mutation>
+        <field name="DURATIONTYPE_LIST">t</field>
+        <value name="DURATION">
+          <shadow type="math_number_positive" id="tul.IkhW(OJyZi]:|#x)">
+            <field name="NUM">1</field>
+          </shadow>
+        </value>
+        <value name="AMOUNT">
+          <shadow type="math_number_positive" id="AzQ[#0K$OCOgp5;i_gu3">
+            <field name="NUM">0.6</field>
+          </shadow>
+        </value>
+      </block>
+    </statement>
+  </block>
+  
+  <block type="after_purchase" id="$w4J`qQVd3Oa.L|`v{Hb" x="714" y="392">
+    <statement name="AFTERPURCHASE_STACK">
+      <block type="controls_if" id="Ysb!w7J*X#.9YUDY+%Ds">
+        <value name="IF0">
+          <block type="check_result" id="check_result_1">
+            <field name="CHECK_RESULT">loss</field>
+          </block>
+        </value>
+        <statement name="DO0">
+          <block type="math_change" id="math_change_1">
+            <field name="VAR">stake</field>
+            <value name="DELTA">
+              <shadow type="math_number" id="math_number_2">
+                <field name="NUM">2</field>
+              </shadow>
+            </value>
+          </block>
+        </statement>
+        <next>
+          <block type="trade_again" id="trade_again_1"></block>
+        </next>
+      </block>
+    </statement>
+  </block>
+
+  <block type="before_purchase" id="a4F3Hkjx$dyv(68EUJdN" deletable="false" x="0" y="744">
+    <statement name="BEFOREPURCHASE_STACK">
+      <block type="controls_if" id="switch_trade">
+        <value name="IF0">
+          <block type="logic_compare" id="logic_compare_1">
+            <field name="OP">EQ</field>
+            <value name="A">
+              <block type="variables_get" id="var_last_trade">
+                <field name="VAR">last_trade</field>
+              </block>
+            </value>
+            <value name="B">
+              <block type="text" id="text_call">
+                <field name="TEXT">CALL</field>
+              </block>
+            </value>
+          </block>
+        </value>
+        <statement name="DO0">
+          <block type="purchase" id="purchase_put">
+            <field name="PURCHASE_LIST">PUT</field>
+          </block>
+        </statement>
+        <next>
+          <block type="purchase" id="purchase_call">
+            <field name="PURCHASE_LIST">CALL</field>
+          </block>
+        </next>
+      </block>
+    </statement>
+  </block>
+
+</xml>
