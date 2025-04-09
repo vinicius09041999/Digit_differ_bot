@@ -1,0 +1,441 @@
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'dart:async';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:workmanager/workmanager.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:wakelock/wakelock.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'dart:math';
+import 'dart:developer' as developer;
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Workmanager().initialize(callbackDispatcher, isInDebugMode: false);
+  runApp(DigitDifferBotApp());
+}
+
+final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
+const FlutterSecureStorage secureStorage = FlutterSecureStorage();
+
+void callbackDispatcher() {
+  Workmanager().executeTask((task, inputData) async {
+    try {
+      await _showNotification("Bot DigitDiffer", "Tarefa em segundo plano executada!");
+      return Future.value(true);
+    } catch (e) {
+      developer.log("Erro na tarefa em segundo plano: $e", name: 'Workmanager');
+      return Future.value(false);
+    }
+  });
+}
+
+class DigitDifferBotApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Bot Digit Differ',
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        visualDensity: VisualDensity.adaptivePlatformDensity,
+      ),
+      home: BotScreen(),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class BotScreen extends StatefulWidget {
+  @override
+  _BotScreenState createState() => _BotScreenState();
+}
+
+class _BotScreenState extends State<BotScreen> with WidgetsBindingObserver {
+  final String _apiUrl = "wss://frontend.binaryws.com/websockets/v3";
+  final String _appId = "1089";
+  double _initialStake = 0.35;
+  final int _duration = 1;
+  final String _contractType = "DIGITDIFF";
+  String _digits = "5";
+
+  bool _isRunning = false;
+  String _status = "Bot desligado";
+  String _lastDigit = "-";
+  int _consecutiveFives = 0;
+  double _currentStake = 0.35;
+  int _winCount = 0;
+  int _lossCount = 0;
+  int _totalTrades = 0;
+  double _balance = 0.0;
+  double _profit = 0.0;
+  WebSocketChannel? _webSocket;
+  bool _isBackground = false;
+
+  List<String> _digitHistory = [];
+  int _martingaleLevel = 0;
+  final int _maxMartingale = 5;
+  int _reconnectAttempts = 0;
+  final int _maxReconnectAttempts = 5;
+
+  TextEditingController _tokenController = TextEditingController();
+  TextEditingController _stakeController = TextEditingController();
+  TextEditingController _digitController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _loadToken();
+    _stakeController.text = _initialStake.toString();
+    _digitController.text = _digits;
+    _initNotifications();
+    _initBackgroundTask();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _webSocket?.sink.close();
+    _tokenController.dispose();
+    _stakeController.dispose();
+    _digitController.dispose();
+    Wakelock.disable();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    setState(() {
+      _isBackground = state != AppLifecycleState.resumed;
+      if (_isRunning && !_isBackground) {
+        _status = "Bot ativo";
+      }
+    });
+  }
+
+  Future<void> _loadToken() async {
+    String? token = await secureStorage.read(key: 'api_token');
+    if (token != null) {
+      setState(() {
+        _tokenController.text = token;
+      });
+    }
+  }
+
+  Future<void> _saveToken(String token) async {
+    await secureStorage.write(key: 'api_token', value: token);
+  }
+
+  void _initNotifications() async {
+    const AndroidInitializationSettings initializationSettingsAndroid =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
+    final InitializationSettings initializationSettings =
+        InitializationSettings(android: initializationSettingsAndroid);
+    await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+
+    await flutterLocalNotificationsPlugin
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.requestPermission();
+  }
+
+  void _initBackgroundTask() {
+    Workmanager().registerPeriodicTask(
+      "botTask",
+      "botBackgroundTask",
+      frequency: const Duration(minutes: 15),
+      constraints: Constraints(networkType: NetworkType.connected),
+    );
+  }
+
+  static Future<void> _showNotification(String title, String body) async {
+    const AndroidNotificationDetails androidPlatformChannelSpecifics = AndroidNotificationDetails(
+      'bot_channel',
+      'Bot Notifications',
+      channelDescription: 'Notificações do Bot DigitDiffer',
+      importance: Importance.max,
+      priority: Priority.high,
+      showWhen: false,
+    );
+    const NotificationDetails platformChannelSpecifics = NotificationDetails(android: androidPlatformChannelSpecifics);
+    await flutterLocalNotificationsPlugin.show(0, title, body, platformChannelSpecifics, payload: 'item x');
+  }
+
+  Future<void> _connectToAPI() async {
+    if (_tokenController.text.isEmpty) {
+      setState(() {
+        _status = "Erro: Insira o token da API";
+      });
+      return;
+    }
+
+    try {
+      final url = "$_apiUrl?app_id=$_appId&l=EN";
+      _webSocket = WebSocketChannel.connect(Uri.parse(url));
+      await _saveToken(_tokenController.text);
+      _webSocket!.sink.add(jsonEncode({"authorize": _tokenController.text}));
+
+      _webSocket!.stream.listen(
+        (data) {
+          _handleMessage(data);
+        },
+        onDone: () {
+          if (_isRunning) {
+            _showNotification("Bot DigitDiffer", "Conexão perdida. Reconectando...");
+            _reconnect();
+          }
+        },
+        onError: (error) {
+          developer.log("Erro no WebSocket: $error", name: 'WebSocket');
+          if (_isRunning) {
+            _showNotification("Bot DigitDiffer", "Erro: $error");
+            _reconnect();
+          }
+        },
+      );
+
+      setState(() {
+        _status = "Conectado à Deriv";
+        _reconnectAttempts = 0;
+      });
+
+      _subscribeToTicks();
+    } catch (e) {
+      developer.log("Erro ao conectar: $e", name: 'WebSocket');
+      setState(() {
+        _status = "Erro ao conectar: $e";
+      });
+      if (_isRunning) {
+        _reconnect();
+      }
+    }
+  }
+
+  void _reconnect() {
+    if (_reconnectAttempts >= _maxReconnectAttempts) {
+      setState(() {
+        _status = "Falha na reconexão. Máximo de tentativas atingido.";
+        _isRunning = false;
+      });
+      return;
+    }
+
+    _reconnectAttempts++;
+    final delay = Duration(seconds: pow(2, _reconnectAttempts).toInt());
+    developer.log("Tentativa de reconexão $_reconnectAttempts após $delay segundos", name: 'WebSocket');
+    Future.delayed(delay, () {
+      if (_isRunning) {
+        _connectToAPI();
+      }
+    });
+  }
+
+  void _subscribeToTicks() {
+    if (_webSocket != null) {
+      _webSocket!.sink.add(jsonEncode({"ticks": "R_100", "subscribe": 1}));
+    }
+  }
+
+  void _handleMessage(String data) {
+    final response = jsonDecode(data);
+
+    if (response['error'] != null) {
+      setState(() {
+        _status = "Erro: ${response['error']['message']}";
+      });
+      _showNotification("Bot DigitDiffer", "Erro: ${response['error']['message']}");
+      return;
+    }
+
+    if (response['authorize'] != null) {
+      setState(() {
+        _balance = double.parse(response['authorize']['balance'].toString());
+      });
+    }
+
+    if (response['tick'] != null) {
+      final tick = response['tick'];
+      final quote = tick['quote'].toString();
+      final digit = quote.contains('.') && quote.split('.')[1].length >= 4
+          ? quote.split('.')[1][3]
+          : "0";
+
+      setState(() {
+        _lastDigit = digit;
+        _updateDigitHistory(digit);
+      });
+
+      if (_isRunning && _consecutiveFives >= 4 && digit != _digits) {
+        _placeBet();
+      }
+    }
+
+    if (response['buy'] != null) {
+      final result = response['buy'];
+      setState(() {
+        _totalTrades++;
+        if (result['profit'] != null && result['profit'] > 0) {
+          _winCount++;
+          _profit += result['profit'];
+          _status = "Ganhou: \$${result['profit'].toStringAsFixed(2)}";
+          _currentStake = _initialStake;
+          _martingaleLevel = 0;
+          _showNotification("Bot DigitDiffer", "Ganhou \$${result['profit'].toStringAsFixed(2)}");
+        } else {
+          _lossCount++;
+          _profit -= _currentStake;
+          _status = "Perdeu: \$${(_currentStake).toStringAsFixed(2)}";
+          _applyMartingale();
+          _showNotification("Bot DigitDiffer", "Perdeu \$${(_currentStake).toStringAsFixed(2)}");
+        }
+        _balance = double.parse(result['balance_after'].toString());
+      });
+    }
+  }
+
+  void _updateDigitHistory(String digit) {
+    setState(() {
+      _digitHistory.add(digit);
+      if (_digitHistory.length > 10) _digitHistory.removeAt(0);
+      _consecutiveFives = digit == _digits ? _consecutiveFives + 1 : 0;
+    });
+  }
+
+  void _applyMartingale() {
+    if (_martingaleLevel < _maxMartingale) {
+      _martingaleLevel++;
+      _currentStake = _initialStake * pow(2, _martingaleLevel);
+    } else {
+      _currentStake = _initialStake;
+      _martingaleLevel = 0;
+    }
+  }
+
+  void _placeBet() {
+    if (_webSocket != null) {
+      final bet = {
+        "buy": 1,
+        "price": _currentStake,
+        "parameters": {
+          "amount": _currentStake,
+          "basis": "stake",
+          "contract_type": _contractType,
+          "currency": "USD",
+          "duration": _duration,
+          "duration_unit": "t",
+          "symbol": "R_100",
+          "barrier": _digits,
+        },
+      };
+      _webSocket!.sink.add(jsonEncode(bet));
+      developer.log("Aposta colocada: $bet", name: 'Bet');
+    }
+  }
+
+  void _startBot() async {
+    if (_tokenController.text.isEmpty) {
+      setState(() {
+        _status = "Erro: Insira o token da API";
+      });
+      return;
+    }
+
+    try {
+      _initialStake = double.parse(_stakeController.text);
+      _digits = _digitController.text;
+      _currentStake = _initialStake;
+      await Wakelock.enable();
+      await _connectToAPI();
+      setState(() {
+        _isRunning = true;
+        _status = "Bot iniciado";
+      });
+      _showNotification("Bot DigitDiffer", "Bot iniciado com sucesso!");
+    } catch (e) {
+      setState(() {
+        _status = "Erro ao iniciar: $e";
+      });
+    }
+  }
+
+  void _stopBot() async {
+    _webSocket?.sink.close();
+    _webSocket = null;
+    await Wakelock.disable();
+    setState(() {
+      _isRunning = false;
+      _status = "Bot desligado";
+      _reconnectAttempts = 0;
+    });
+    _showNotification("Bot DigitDiffer", "Bot parado.");
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Bot Digit Differ'),
+        actions: [
+          IconButton(
+            icon: Icon(_isRunning ? Icons.stop : Icons.play_arrow),
+            onPressed: _isRunning ? _stopBot : _startBot,
+          ),
+        ],
+      ),
+      body: SingleChildScrollView(
+        padding: EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _tokenController,
+              decoration: InputDecoration(
+                labelText: 'Token da API',
+                border: OutlineInputBorder(),
+              ),
+              obscureText: true,
+            ),
+            SizedBox(height: 10),
+            TextField(
+              controller: _stakeController,
+              decoration: InputDecoration(
+                labelText: 'Valor Inicial da Aposta (USD)',
+                border: OutlineInputBorder(),
+              ),
+              keyboardType: TextInputType.number,
+            ),
+            SizedBox(height: 10),
+            TextField(
+              controller: _digitController,
+              decoration: InputDecoration(
+                labelText: 'Dígito de Comparação (0-9)',
+                border: OutlineInputBorder(),
+              ),
+              keyboardType: TextInputType.number,
+            ),
+            SizedBox(height: 20),
+            Text('Status: $_status', style: TextStyle(fontSize: 16)),
+            Text('Saldo: \$${(_balance).toStringAsFixed(2)}', style: TextStyle(fontSize: 16)),
+            Text('Último Dígito: $_lastDigit', style: TextStyle(fontSize: 16)),
+            Text('Vitórias: $_winCount | Perdas: $_lossCount', style: TextStyle(fontSize: 16)),
+            Text('Total de Trades: $_totalTrades', style: TextStyle(fontSize: 16)),
+            Text('Lucro: \$${(_profit).toStringAsFixed(2)}', style: TextStyle(fontSize: 16)),
+            SizedBox(height: 20),
+            Text('Histórico de Dígitos:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            Container(
+              height: 50,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                itemCount: _digitHistory.length,
+                itemBuilder: (context, index) => Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 4.0),
+                  child: Chip(label: Text(_digitHistory[index])),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
